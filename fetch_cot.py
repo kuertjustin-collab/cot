@@ -41,31 +41,39 @@ CODE_MAP = {
     "13874A": "ES",
 }
 
-# Mögliche Spaltennamen in der CFTC-Rohdatei (variiert leicht je nach Jahr/Version,
-# daher mehrere Kandidaten pro logischem Feld -- robust gegen kleine Namensänderungen).
-COL_CANDIDATES = {
-    "date": ["As_of_Date_In_Form_YYYY-MM-DD", "As_of_Date_in_Form_YYYY-MM-DD",
-             "Report_Date_as_YYYY-MM-DD", "report_date_as_yyyy_mm_dd"],
-    "code": ["CFTC_Contract_Market_Code", "cftc_contract_market_code"],
-    "comm_long": ["Commercial_Positions_Long_All", "Comm_Positions_Long_All",
-                  "commercial_long_all"],
-    "comm_short": ["Commercial_Positions_Short_All", "Comm_Positions_Short_All",
-                   "commercial_short_all"],
-    "noncomm_long": ["Noncommercial_Positions_Long_All", "NonComm_Positions_Long_All",
-                      "noncomm_positions_long_all"],
-    "noncomm_short": ["Noncommercial_Positions_Short_All", "NonComm_Positions_Short_All",
-                       "noncomm_positions_short_all"],
-    "nonrep_long": ["Nonreportable_Positions_Long_All", "nonrept_positions_long_all"],
-    "nonrep_short": ["Nonreportable_Positions_Short_All", "nonrept_positions_short_all"],
+# WICHTIG: Die CFTC-Rohdatei (deafut.txt) hat KEINE Kopfzeile -- sie beginnt
+# direkt mit den Daten. Die Spaltenreihenfolge ist aber offiziell dokumentiert
+# unter https://www.cftc.gov/MarketReports/CommitmentsofTraders/HistoricalViewable/cotvariableslegacy.html
+# und wurde zusätzlich 1:1 gegen eine echte Zeile aus der Live-Datei verifiziert
+# (0-basierter Index in der Zeile):
+#   0  Market_and_Exchange_Names
+#   1  As_of_Date_In_Form_YYMMDD
+#   2  As_of_Date_In_Form_YYYY-MM-DD   <- date
+#   3  CFTC_Contract_Market_Code        <- code
+#   4  CFTC_Market_Code_In_Initials
+#   5  CFTC_Region_Code
+#   6  CFTC_Commodity_Code
+#   7  Open_Interest_All
+#   8  Noncommercial_Positions_Long_All   <- noncomm_long
+#   9  Noncommercial_Positions_Short_All  <- noncomm_short
+#   10 Noncommercial_Positions_Spreading_All
+#   11 Commercial_Positions_Long_All   <- comm_long
+#   12 Commercial_Positions_Short_All  <- comm_short
+#   13 Total_Reportable_Positions_Long_All
+#   14 Total_Reportable_Positions_Short_All
+#   15 Nonreportable_Positions_Long_All   <- nonrep_long
+#   16 Nonreportable_Positions_Short_All  <- nonrep_short
+COL_INDEX = {
+    "date": 2,
+    "code": 3,
+    "noncomm_long": 8,
+    "noncomm_short": 9,
+    "comm_long": 11,
+    "comm_short": 12,
+    "nonrep_long": 15,
+    "nonrep_short": 16,
 }
-
-
-def pick_column(fieldnames, candidates):
-    lower_map = {f.lower(): f for f in fieldnames}
-    for c in candidates:
-        if c.lower() in lower_map:
-            return lower_map[c.lower()]
-    return None
+MIN_COLS = max(COL_INDEX.values()) + 1
 
 
 def fetch_raw():
@@ -83,26 +91,19 @@ def fetch_raw():
 
 
 def parse_rows(text):
-    reader = csv.DictReader(io.StringIO(text))
-    fieldnames = reader.fieldnames or []
-
-    resolved = {}
-    for key, candidates in COL_CANDIDATES.items():
-        col = pick_column(fieldnames, candidates)
-        if col is None:
-            print("FEHLER: Spalte für '%s' nicht gefunden. Vorhandene Spalten:" % key,
-                  file=sys.stderr)
-            print(fieldnames, file=sys.stderr)
-            sys.exit(1)
-        resolved[key] = col
+    reader = csv.reader(io.StringIO(text))
 
     out = {}  # waehrung -> row-dict (nur die neueste Zeile je Code, falls mehrere)
+    seen_any_row = False
     for row in reader:
-        code = (row.get(resolved["code"]) or "").strip()
+        if not row or len(row) < MIN_COLS:
+            continue
+        seen_any_row = True
+        code = (row[COL_INDEX["code"]] or "").strip()
         waehrung = CODE_MAP.get(code)
         if not waehrung:
             continue
-        datum_raw = (row.get(resolved["date"]) or "").strip()
+        datum_raw = (row[COL_INDEX["date"]] or "").strip()
         try:
             datum = datetime.strptime(datum_raw, "%Y-%m-%d").strftime("%Y-%m-%d")
         except ValueError:
@@ -114,13 +115,20 @@ def parse_rows(text):
                 "datum": datum,
                 "waehrung": waehrung,
                 "cftc_code": code,
-                "comm_long": row.get(resolved["comm_long"], "").strip(),
-                "comm_short": row.get(resolved["comm_short"], "").strip(),
-                "noncomm_long": row.get(resolved["noncomm_long"], "").strip(),
-                "noncomm_short": row.get(resolved["noncomm_short"], "").strip(),
-                "nonrep_long": row.get(resolved["nonrep_long"], "").strip(),
-                "nonrep_short": row.get(resolved["nonrep_short"], "").strip(),
+                "comm_long": (row[COL_INDEX["comm_long"]] or "").strip(),
+                "comm_short": (row[COL_INDEX["comm_short"]] or "").strip(),
+                "noncomm_long": (row[COL_INDEX["noncomm_long"]] or "").strip(),
+                "noncomm_short": (row[COL_INDEX["noncomm_short"]] or "").strip(),
+                "nonrep_long": (row[COL_INDEX["nonrep_long"]] or "").strip(),
+                "nonrep_short": (row[COL_INDEX["nonrep_short"]] or "").strip(),
             }
+
+    if not seen_any_row:
+        print("FEHLER: Keine einzige auswertbare Zeile in der Rohdatei gefunden "
+              "(Datei evtl. leer oder Format hat sich grundlegend geändert).",
+              file=sys.stderr)
+        sys.exit(1)
+
     return list(out.values())
 
 
