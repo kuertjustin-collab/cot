@@ -1,0 +1,37 @@
+name: COT-Daten aktualisieren
+
+on:
+  schedule:
+    # Jeden Freitag 21:30 UTC — nach der CFTC-Veröffentlichung (üblich: Freitag ~20:30 UTC)
+    - cron: "30 21 * * 5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  update-cot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repo auschecken
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: COT-Daten abrufen und einfügen
+        run: python fetch_cot.py
+
+      - name: Änderungen committen und pushen
+        run: |
+          git config user.name "cot-bot"
+          git config user.email "cot-bot@users.noreply.github.com"
+          if git diff --quiet -- cot.csv manifest.json; then
+            echo "Keine Änderungen."
+          else
+            git add cot.csv manifest.json
+            git commit -m "COT-Update $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
